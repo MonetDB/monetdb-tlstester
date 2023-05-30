@@ -2,10 +2,18 @@
 
 from argparse import ArgumentParser
 from datetime import datetime, timedelta
+import http.server
+import io
 import logging
 import os
+import socketserver
+import ssl
+from ssl import SSLContext, SSLError, TLSVersion
+import struct
 import sys
-from typing import Any, List, Optional
+import tempfile
+from threading import Thread
+from typing import Any, Callable, List, Optional
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization, hashes
@@ -31,7 +39,8 @@ argparser.add_argument(
     help="Write generated keys and certs to this directory",
 )
 argparser.add_argument(
-    "--listen",
+    "-l",
+    "--listen-addr",
     type=str,
     default="localhost",
     help="interface to listen on, default=localhost",
@@ -69,7 +78,7 @@ class Certs:
         self.gen_keys()
 
     def get_file(self, name):
-        return self._files[name]
+        return self._files.get(name)
 
     def all(self) -> dict[str, str]:
         return self._files.copy()
@@ -163,6 +172,13 @@ class Certs:
         )
         self.insert_file(f"{name}.key", pem_key)
 
+        der_key = key.private_bytes(
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encoding=serialization.Encoding.DER,
+            encryption_algorithm=serialization.NoEncryption(),
+        )
+        self.insert_file(f"{name}.key.der", der_key)
+
         n = subject_name
         pem = b""
         while n:
@@ -172,8 +188,196 @@ class Certs:
         self.insert_file(f"{name}.crt", pem)
 
     def insert_file(self, name, content):
+        assert isinstance(content, bytes)
         assert name not in self._files
         self._files[name] = content
+
+
+class Server:
+    certs: Certs
+    portmap: dict[str, int]
+    next_port: int
+    workers: List[Callable[[], None]]
+
+    def __init__(self, certs: Certs, listen_addr: str, base_port: int, sequential):
+        self.certs = certs
+        self.portmap = dict()
+        self.next_port = base_port + 1 if sequential else 0
+        self.workers = []
+
+        self.spawn_http(listen_addr, base_port)
+
+        self.spawn_mapi("plain", listen_addr, None)
+        self.spawn_mapi("server1", listen_addr, self.ssl_context("server1"))
+        self.spawn_mapi("server2", listen_addr, self.ssl_context("server2"))
+        self.spawn_mapi("server3", listen_addr, self.ssl_context("server3"))
+
+        self.spawn_mapi("expiredcert", listen_addr, self.ssl_context("server1x"))
+        self.spawn_mapi(
+            "tls12",
+            listen_addr,
+            self.ssl_context("server1", tls_version=TLSVersion.TLSv1_2),
+        )
+        self.spawn_mapi(
+            "clientauth",
+            listen_addr,
+            self.ssl_context("server1", client_cert="server2"),
+        )
+
+    def ssl_context(
+        self, cert_name: str, tls_version=TLSVersion.TLSv1_3, client_cert=None
+    ):
+        context = SSLContext(ssl.PROTOCOL_TLS_SERVER)
+
+        context.minimum_version = tls_version or TLSVersion.TLSv1_3
+        if tls_version:
+            context.maximum_version = tls_version
+
+        # Turns out the ssl API forces us to write the certs to file. Yuk!
+        with tempfile.NamedTemporaryFile(mode="wb") as f:
+            f.write(self.certs.get_file(cert_name + ".key"))
+            f.write(self.certs.get_file(cert_name + ".crt"))
+            f.flush()
+            context.load_cert_chain(f.name)
+
+        if client_cert:
+            context.verify_mode = ssl.CERT_REQUIRED
+            cert_bytes = self.certs.get_file(client_cert + ".crt")
+            cert_str = str(cert_bytes, "utf-8")
+            context.load_verify_locations(cadata=cert_str)
+
+        return context
+
+    def serve_forever(self):
+        threads = []
+        for worker in self.workers:
+            t = Thread(target=worker, daemon=True)
+            t.start()
+            threads.append(t)
+        for t in threads:
+            t.join()
+
+    def spawn_http(self, listen_addr: str, port: int):
+        handler = lambda req, addr, server: WebHandler(
+            req, addr, server, self.certs, self.portmap
+        )
+        server = http.server.HTTPServer((listen_addr, port), handler)
+        log.debug(f"Bound base port {args.base_port}")
+        self.workers.append(server.serve_forever)
+
+    def spawn_mapi(self, name: str, listen_addr: str, ctx: SSLContext):
+        port = self.next_port
+        if self.next_port > 0:
+            self.next_port += 1
+        handler = lambda req, addr, server: MapiHandler(req, addr, server, name, ctx)
+        server = MyTCPServer((listen_addr, port), handler)
+        port = server.server_address[1]
+        log.debug(f"Bound port {name} to {port}")
+        self.workers.append(server.serve_forever)
+
+
+class WebHandler(http.server.BaseHTTPRequestHandler):
+    certs: Certs
+    portmap: dict[str, int]
+
+    def __init__(self, req, addr, server, certs: Certs, portmap: dict[str, int]):
+        self.certs = certs
+        self.portmap = dict(banana=9999)
+        super().__init__(req, addr, server)
+
+    def do_GET(self):
+        if self.path == "/":
+            return self.do_root()
+        content = self.certs.get_file(self.path[1:])
+        if content:
+            return self.do_content(content)
+        self.send_error(http.HTTPStatus.NOT_FOUND)
+
+    def do_root(self):
+        self.send_response(http.HTTPStatus.OK)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        w = io.TextIOWrapper(
+            self.wfile,
+            encoding="ascii",
+        )
+        for name, port in self.portmap.items():
+            print(f"{name}:{port}", file=w)
+        w.flush()
+        w.detach()
+
+    def do_content(self, content: bytes):
+        try:
+            str(content, encoding="ascii")
+            content_type = "text/plain; charset=utf-8"
+        except UnicodeDecodeError:
+            content_type = "application/binary"
+
+        self.send_response(http.HTTPStatus.OK)
+        self.send_header("Content-Type", content_type)
+        self.end_headers()
+        self.wfile.write(content)
+
+
+class MyTCPServer(socketserver.ForkingTCPServer):
+    allow_reuse_address = True
+    pass
+
+
+class MapiHandler(socketserver.BaseRequestHandler):
+    name: str
+    context: SSLContext
+
+    CHALLENGE = b"s7NzFDHo0UdlE:merovingian:9:RIPEMD160,SHA512,SHA384,SHA256,SHA224,SHA1:LIT:SHA512:"
+    ERRORMESSAGE = b"!Sorry, this is not a real MonetDB instance"
+
+    def __init__(self, req, addr, server, name, context):
+        self.name = name
+        self.context = context
+        super().__init__(req, addr, server)
+
+    def handle(self):
+        log.debug(f"port '{self.name}': new connection")
+        conn = self.request
+        if self.context:
+            log.debug(f"port '{self.name}': trying to set up TLS")
+            try:
+                conn = self.context.wrap_socket(conn, server_side=True)
+                log.info(f"port '{self.name}': TLS handshake succeeded")
+            except SSLError as e:
+                log.info(f"port '{self.name}': TLS handshake failed: {e}")
+                return
+        else:
+            log.info(f"port '{self.name}' no TLS handshake necessary")
+
+        try:
+            self.send_message(conn, self.CHALLENGE)
+            log.debug(f"port '{self.name}': sent challenge, awaiting response")
+            buffer = conn.recv(4096)
+            if not buffer:
+                log.debug(f"port '{self.name}': received instant EOF")
+                return
+            elif b"\n" in buffer:
+                log.debug(f"port '{self.name}': received response")
+            else:
+                log.debug(
+                    f"port '{self.name}': received partial response, reading more"
+                )
+                while b"\n" not in buffer:
+                    buffer = conn.recv(4096)
+                    if not buffer:
+                        log.info(f"port '{self.name}': unexpected EOF during response")
+                        return
+            self.send_message(conn, self.ERRORMESSAGE)
+            log.debug(f"port '{self.name}': sent closing message")
+
+        except OSError as e:
+            log.info(f"port '{self.name}': error {e}")
+
+    def send_message(self, conn, msg: bytes):
+        n = len(msg)
+        head = struct.pack("<h", 2 * n + 1)
+        conn.sendall(head + msg)
 
 
 def main(args):
@@ -191,6 +395,16 @@ def main(args):
                 f.write(content)
                 count += 1
         log.info(f"Wrote {count} files to {dir!r}")
+
+    server = Server(
+        certs=certs,
+        base_port=args.base_port,
+        listen_addr=args.listen_addr,
+        sequential=args.sequential,
+    )
+
+    log.info("Serving requests")
+    server.serve_forever()
 
 
 if __name__ == "__main__":
