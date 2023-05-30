@@ -75,25 +75,33 @@ class Certs:
         return self._files.copy()
 
     def gen_keys(self):
-        self.gen_ca_tree("1")
-        self.gen_ca_tree("2")
-        self.gen_ca_tree("3")
+        ca1 = self.gen_ca("ca1")
+        self.gen_server("server1", ca1)
+        self.gen_server("server1x", ca1, not_before=-15, not_after=-1)
+        ca2 = self.gen_ca("ca2")
+        self.gen_server("server2", ca2)
+        self.gen_server("client2", ca2)
+        ca3 = self.gen_ca("ca3")
+        self.gen_server("server3", ca3)
 
-    def gen_ca_tree(self, suffix: str):
+    def gen_ca(self, name: str):
         ca_name = x509.Name(
             [
-                x509.NameAttribute(x509.NameOID.ORGANIZATION_NAME, f"Org {suffix}"),
+                x509.NameAttribute(x509.NameOID.ORGANIZATION_NAME, f"Org {name}"),
                 x509.NameAttribute(
                     x509.NameOID.COMMON_NAME, f"The Certificate Authority"
                 ),
             ]
         )
         critical_ca_extensions = [x509.BasicConstraints(ca=True, path_length=1)]
-        self.gen_key(f"ca{suffix}", ca_name, critical_extensions=critical_ca_extensions)
+        self.gen_key(name, ca_name, critical_extensions=critical_ca_extensions)
 
+        return ca_name
+
+    def gen_server(self, name: str, ca_name: x509.Name, not_before=0, not_after=14):
         server_name = x509.Name(
             [
-                x509.NameAttribute(x509.NameOID.ORGANIZATION_NAME, f"Org {suffix}"),
+                x509.NameAttribute(x509.NameOID.ORGANIZATION_NAME, f"Org {name}"),
                 x509.NameAttribute(x509.NameOID.COMMON_NAME, self.hostname),
             ]
         )
@@ -101,9 +109,11 @@ class Certs:
             x509.SubjectAlternativeName([x509.DNSName(self.hostname)])
         ]
         self.gen_key(
-            f"server{suffix}",
-            server_name,
-            ca_name,
+            name=name,
+            subject_name=server_name,
+            parent_name=ca_name,
+            not_before=not_before,
+            not_after=not_after,
             noncritical_extensions=noncritical_server_extensions,
         )
 
