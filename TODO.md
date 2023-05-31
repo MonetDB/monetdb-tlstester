@@ -9,7 +9,7 @@ TO DO
 
 * [X] Have the script listen on the http port and serve the portmap.
 
-* [ ] Have the script listen on server1, test with pymonetdb prototype
+* [X] Have the script listen on server1, test with pymonetdb prototype
 
 * [X] Same, with server2 and server3.
 
@@ -17,13 +17,9 @@ TO DO
 
 * [X] Implement port expiredcert
 
-* [ ] Implement port goaway
+* [X] Remove ports https and goaway from the documentation
 
-* [ ] Remove https port from the documentation
-
-* [ ] Remove ALPN from the documentation, cannot test it with Python ssl module
-
-* [ ] Decide on SNI, with Panos
+* [X] Remove and SNI, ALPN from the documentation, cannot test it with Python ssl module
 
 * [X] Implement port clientauth
 

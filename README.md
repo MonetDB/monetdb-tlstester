@@ -10,8 +10,6 @@ that they are actually correctly validating the certificate host name etc.
 If the TLS handshake succeeds, the server performs a simulated MAPI
 handshake ending in the error message 
 `Sorry, this is not a real MonetDB server`.
-It is also possible to configure the server to proxy the connections to
-a real MonetDB instance.
 
 
 Certificates
@@ -55,25 +53,18 @@ Ports
 -----
 
 Note: unless mentioned otherwise, all MAPI ports will refuse connection attempts
-where
-
-* TLS version less than 1.3 is used. TLS 1.2 just doesn't make sense for a
-  protocol introduced in 2023.
-
-* The client sends an SNI (Server Name Indication) or ALPN (Application-Layer
-  Protocol Negotiation) record. Disallowing them today ensures that we don't
-  have to take existing incompatible uses into account if we decide we want to
-  use them tomorrow.
+when TLS version less than 1.3 is used. TLS 1.2 just doesn't make sense for a
+protocol introduced in 2023.
 
 <dl>
 
 <dt>base port</dt>
-<dd>On the base port, <code>tlstest.py</code> runs a small http server (not https).
-On <code>/</code> it serves a small README containing at least the substring
-<code>TLS Tester</code>. At <code>/portmap</code> it it serves a text file with
-each line containing a <code>«port name»:«port number»</code> mapping.
-It also serves all the above keys and certificates. Yes, including the private
-keys!
+<dd>
+   On the base port, <code>tlstest.py</code> runs a small http server (not https).
+   On <code>/</code> it serves a text file with each line containing a
+   <code>«port name»:«port number»</code> pair.
+   It also serves all the above keys and certificates, as <code>/server1.crt</code>,
+   etc. This includes the private keys.
 </dd>
 
 <dt>server1</dt>
@@ -85,27 +76,20 @@ keys!
 <dt>server3</dt>
 <dd>TLS MAPI server signed by certificate server3.crt.</dd>
 
-<dt>https</dt>
-<dd>https version of web server on the base port, useful for quick
-manual testing using a web browser. Uses server1.crt.
-</dd>
-
 <dt>plain</dt>
 <dd>Plain unencrypted MAPI connection.</dd>
-
-<dt>goaway</dt>
-<dd>A port on which connections are refused.</dd>
 
 <dt>expiredcert</dt>
 <dd>A port using the expired certificate server1x.crt.</dd>
 
 <dt>tls12</dt>
-<dd>A port using server1.crt, but with TLS 1.2.</dd>
+<dd>A port using server1.crt, but forced to TLS protocol version 1.2.</dd>
 
 <dt>clientauth</dt>
-<dd>A port using server1.crt, but requiring client certificates signed by CA 2.
-Currently the server verifies the certificate but not the hostname or any
-user id.
+<dd>
+   A port using server1.crt, but requiring client certificates signed by CA 2.
+   Currently the server verifies the certificate but not the hostname or any
+   user id.
 </dd>
 
 </dl>
@@ -194,27 +178,23 @@ distinctive phrase `Sorry, this is not a real MonetDB server`.
 Docker image
 ------------
 
-The accompanying Docker image can be configured using the following
-environment variables:
+The script is also shipped as a Docker image, NAME.
+This is convenient for tests running on GitHub Actions, because they can access
+it as a service container.
+
+The container can be configured using the following environment variables:
 
 <dl>
 
 <dt>TLSTEST_BASE_PORT</dt>
-<dd>Base port to listen on. Defaults to 4300.
-The rest of the ports will be allocated consecutively after this.
-Thus, allowing for some future expansion you should probably expose
-port 4300-4350.</dd>
+<dd>
+   Base port to listen on. Defaults to 4300.
+   The rest of the ports will be allocated consecutively after this.
+   Thus, allowing for some future expansion you should probably expose port 4300-4350.
+</dd>
 
 <dt>TLSTEST_DOMAIN</dt>
 <dd>Host name to sign the certificates for. Defaults to localhost.localdomain.</dd>
-
-<dt>TLSTEST_FORWARD_HOST</dt>
-<dd>Host to forward succesful connections to, rather than the internal
-MAPI simulator.</dd>
-
-<dt>TLSTEST_FORWARD_PORT</dt>
-<dd>Port to forward succesful connections to, rather than the internal
-MAPI simulator.</dd>
 
 </dl>
 
