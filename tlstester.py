@@ -330,6 +330,7 @@ class MyTCPServer(socketserver.ForkingTCPServer):
 class MapiHandler(socketserver.BaseRequestHandler):
     name: str
     context: SSLContext
+    conn: ssl.SSLSocket
 
     CHALLENGE = b"s7NzFDHo0UdlE:merovingian:9:RIPEMD160,SHA512,SHA384,SHA256,SHA224,SHA1:LIT:SHA512:"
     ERRORMESSAGE = b"!Sorry, this is not a real MonetDB instance"
@@ -341,46 +342,67 @@ class MapiHandler(socketserver.BaseRequestHandler):
 
     def handle(self):
         log.debug(f"port '{self.name}': new connection")
-        conn = self.request
         if self.context:
             log.debug(f"port '{self.name}': trying to set up TLS")
             try:
-                conn = self.context.wrap_socket(conn, server_side=True)
+                self.conn = self.context.wrap_socket(self.request, server_side=True)
                 log.info(f"port '{self.name}': TLS handshake succeeded")
             except SSLError as e:
                 log.info(f"port '{self.name}': TLS handshake failed: {e}")
                 return
         else:
+            self.conn = self.request
             log.info(f"port '{self.name}' no TLS handshake necessary")
 
         try:
-            self.send_message(conn, self.CHALLENGE)
+            self.send_message(self.CHALLENGE)
             log.debug(f"port '{self.name}': sent challenge, awaiting response")
-            buffer = conn.recv(4096)
-            if not buffer:
-                log.debug(f"port '{self.name}': received instant EOF")
-                return
-            elif b"\n" in buffer:
-                log.debug(f"port '{self.name}': received response")
-            else:
+            if self.recv_message():
+                self.send_message(self.ERRORMESSAGE)
                 log.debug(
-                    f"port '{self.name}': received partial response, reading more"
+                    f"port '{self.name}': received response, sent closing message"
                 )
-                while b"\n" not in buffer:
-                    buffer = conn.recv(4096)
-                    if not buffer:
-                        log.info(f"port '{self.name}': unexpected EOF during response")
-                        return
-            self.send_message(conn, self.ERRORMESSAGE)
-            log.debug(f"port '{self.name}': sent closing message")
 
         except OSError as e:
             log.info(f"port '{self.name}': error {e}")
 
-    def send_message(self, conn, msg: bytes):
+    def send_message(self, msg: bytes):
         n = len(msg)
         head = struct.pack("<h", 2 * n + 1)
-        conn.sendall(head + msg)
+        self.conn.sendall(head + msg)
+
+    def recv_message(self):
+        nread = 0
+        while True:
+            head = self.recv_bytes(2)
+            nread += len(head)
+            if len(head) < 2:
+                break
+            n = struct.unpack("<h", head)[0]
+            size = n // 2
+            last = (n & 1) > 0
+            if size > 0:
+                body = self.recv_bytes(size)
+                nread += len(body)
+                if len(body) < size:
+                    break
+            if last:
+                return True
+
+        log.info("port '{self.name}': incomplete message, EOF after {nread} bytes")
+        return False
+
+    def recv_bytes(self, size):
+        """Read 'size' bytes. Only return fewer if EOF"""
+        buf = b""
+        while len(buf) < size:
+            remaining = size - len(buf)
+            more = self.conn.recv(remaining)
+            if more == b"":
+                return buf
+            else:
+                buf += more
+        return buf
 
 
 def main(args):
