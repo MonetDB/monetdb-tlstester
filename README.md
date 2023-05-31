@@ -125,34 +125,71 @@ exchange will end in an error message but it is still a succes from the
 perspective of the TLS connection. The succesful error can be recognized by the
 distinctive phrase `Sorry, this is not a real MonetDB server`.
 
-1. Connect to port plain over TLS. Have a succesful MAPI exchange.
+<dl>
 
-2. Connect to port server1 over TLS, verifying the connection using ca1.crt.
-   Have a succesful MAPI exchange
+<dt>connect_plain</dt>
+<dd>
+   Connect to port 'plain', without using TLS. Have a succesful MAPI exchange.
+</dd>
 
-3. Connect to port server1 over TLS, verifying the connection using ca2.crt.
+<dt>connect_tls</dt>
+<dd>
+   Connect to port 'server1' over TLS, verifying the connection using ca1.crt.
+   Have a succesful MAPI exchange.
+</dd>
+
+<dt>refuse_no_cert</dt>
+<dd>
+   Connect to port 'server1' over TLS, without passing a certificate.
+   The connection should fail because ca1.crt is not in the system trust root store.
+</dd>
+
+<dt>refuse_wrong_cert</dt>
+<dd>
+   Connect to port 'server1' over TLS, verifying the connection using ca2.crt.
    The client should refuse to let the connection proceed.
+</dd>
 
-4. Connect to port tls12 over TLS, verifying the connection using ca1.crt.
+<dt>refuse_tlsv12</dt>
+<dd>
+   Connect to port 'tls12' over TLS, verifying the connection using ca1.crt.
+   The client should refuse to let the connection proceed because it should
+   require at least TLSv1.3.
+</dd>
+
+<dt>refuse_expired</dt>
+<dd>
+   Connect to port 'expiredcert' over TLS, verifying the connection using ca1.crt.
    The client should refuse to let the connection proceed.
+</dd>
 
-5. Connect to port expiredcert over TLS, verifying the connection using ca1.crt.
-   The client should refuse to let the connection proceed.
-
-6. Connect to port clientauth over TLS, verifying the connection using ca1.crt.
+<dt>connect_client_auth</dt>
+<dd>
+   Connect to port 'clientauth' over TLS, verifying the connection using ca1.crt.
    Authenticate using server2.key and server2.crt.
    Have a succesful MAPI exchange.
+</dd>
 
-7. Connect to port plain over TLS. This should fail.
+<dt>fail_plain_to_tls</dt>
+<dd>
+   Connect to port 'plain' over TLS. This should fail, not hang.
+</dd>
 
-8. Make a plain MAPI connection to port server1. This should fail.
+<dt>fail_tls_to_plain</dt>
+<dd>
+   Make a plain MAPI connection to port 'server1'. This should fail.
+</dd>
 
-9. Only when running in a throwaway environment such as a Docker container:
+<dt>connect_trusted</dt>
+<dd>
+   Only when running in a throwaway environment such as a Docker container:
    Install ca3.crt in the system root certificate store. This is highly
-   system-specific. Connect to port server3 over TLS without passing a
+   system-specific. Connect to port 'server3' over TLS without passing a
    certificate to check. The implementation should pick it up from the system
    store. Have a succesful MAPI exchange.
+</dd>
 
+</dl>
 
 Docker image
 ------------
