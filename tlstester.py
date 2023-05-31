@@ -273,6 +273,7 @@ class Server:
         server = MyTCPServer((listen_addr, port), handler)
         port = server.server_address[1]
         log.debug(f"Bound port {name} to {port}")
+        self.portmap[name] = port
         self.workers.append(server.serve_forever)
 
 
@@ -282,13 +283,15 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
 
     def __init__(self, req, addr, server, certs: Certs, portmap: dict[str, int]):
         self.certs = certs
-        self.portmap = dict(banana=9999)
+        self.portmap = portmap
         super().__init__(req, addr, server)
 
     def do_GET(self):
-        if self.path == "/":
+        idx = self.path.find("?")
+        path = self.path[:idx] if idx > 0 else self.path
+        if path == "/":
             return self.do_root()
-        content = self.certs.get_file(self.path[1:])
+        content = self.certs.get_file(path[1:])
         if content:
             return self.do_content(content)
         self.send_error(http.HTTPStatus.NOT_FOUND)
