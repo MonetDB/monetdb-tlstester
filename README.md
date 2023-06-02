@@ -186,17 +186,16 @@ The container can be configured using the following environment variables:
 
 <dl>
 
-<dt>TLSTEST_BASE_PORT</dt>
-<dd>
-   Base port to listen on. Defaults to 4300.
-   The rest of the ports will be allocated consecutively after this.
-   Thus, allowing for some future expansion you should probably expose port 4300-4350.
-</dd>
-
 <dt>TLSTEST_DOMAIN</dt>
 <dd>Host name to sign the certificates for. Defaults to localhost.localdomain.</dd>
 
 </dl>
+
+Example:
+
+```
+docker run --rm -i -t -e TLSTEST_DOMAIN=localhost.localdomain -p 127.0.0.1:4300-4350:4300-4350 monetdb/tlstester:0.1
+```
 
 
 Integration with client libraries
