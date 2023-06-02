@@ -19,7 +19,9 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-DESCRIPTION = "A utility to help test TLS MAPI client implementations."
+VERSION = "0.2.0"
+
+DESCRIPTION = f"tlstester.py version {VERSION}: a utility to help test TLS MAPI client implementations."
 
 log = logging.getLogger("tlstester")
 
