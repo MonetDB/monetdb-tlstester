@@ -89,7 +89,7 @@ class Certs:
         self.gen_server("server1x", ca1, not_before=-15, not_after=-1)
         ca2 = self.gen_ca("ca2")
         self.gen_server("server2", ca2)
-        self.gen_server("client2", ca2)
+        self.gen_server("client2", ca2, keycrt=True)
         ca3 = self.gen_ca("ca3")
         self.gen_server("server3", ca3)
 
@@ -107,7 +107,7 @@ class Certs:
 
         return ca_name
 
-    def gen_server(self, name: str, ca_name: x509.Name, not_before=0, not_after=14):
+    def gen_server(self, name: str, ca_name: x509.Name, not_before=0, not_after=14, keycrt=False):
         server_name = x509.Name(
             [
                 x509.NameAttribute(x509.NameOID.ORGANIZATION_NAME, f"Org {name}"),
@@ -124,6 +124,7 @@ class Certs:
             not_before=not_before,
             not_after=not_after,
             noncritical_extensions=noncritical_server_extensions,
+            keycrt=keycrt,
         )
 
     def gen_key(
@@ -135,6 +136,7 @@ class Certs:
         not_after=14,
         critical_extensions: List[x509.ExtensionType] = [],
         noncritical_extensions: List[x509.ExtensionType] = [],
+        keycrt=False,
     ):
         key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
 
@@ -173,12 +175,16 @@ class Certs:
         self.insert_file(f"{name}.key", pem_key)
 
         n = subject_name
-        pem = b""
+        pem_crt = b""
         while n:
             c = self._certs[n]
-            pem += c.public_bytes(serialization.Encoding.PEM)
+            pem_crt += c.public_bytes(serialization.Encoding.PEM)
             n = self._parents.get(n)
-        self.insert_file(f"{name}.crt", pem)
+        self.insert_file(f"{name}.crt", pem_crt)
+
+        if keycrt:
+            pem_keycrt = pem_key + pem_crt
+            self.insert_file(f"{name}.keycrt", pem_keycrt)
 
     def insert_file(self, name, content):
         assert isinstance(content, bytes)
