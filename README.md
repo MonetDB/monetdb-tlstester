@@ -150,7 +150,7 @@ distinctive phrase `Sorry, this is not a real MonetDB server`.
 <dt>connect_client_auth</dt>
 <dd>
    Connect to port 'clientauth' over TLS, verifying the connection using ca1.crt.
-   Authenticate using server2.key and server2.crt.
+   Authenticate using client2.key and client2.crt.
    Have a succesful MAPI exchange.
 </dd>
 
@@ -178,7 +178,7 @@ distinctive phrase `Sorry, this is not a real MonetDB server`.
 Docker image
 ------------
 
-The script is also shipped as a Docker image, NAME.
+The script is also shipped as a Docker image, monetdb/tlstester.
 This is convenient for tests running on GitHub Actions, because they can access
 it as a service container.
 
@@ -194,7 +194,7 @@ The container can be configured using the following environment variables:
 Example:
 
 ```
-docker run --rm -i -t -e TLSTEST_DOMAIN=localhost.localdomain -p 127.0.0.1:4300-4350:4300-4350 monetdb/tlstester:0.1
+docker run --rm -i -t -e TLSTEST_DOMAIN=localhost.localdomain -p 127.0.0.1:4300-4350:4300-4350 monetdb/tlstester:0.2.0
 ```
 
 
@@ -209,7 +209,7 @@ container they can install ca3.crt in the system root certificate store.
 This is sufficient for pymonetdb and also for monetdb-java which is mirrored on
 GitHub.
 
-Libmapi/mclient/ODBC need to be tested through Mtest. We should probably
+Libmapi/mclient/ODBC need to be tested through Mtest. We should probably just include
 tlstester.py into the source tree and manually keep it synchronized with this
 repository. This is not a huge problem because tlstester.py should rarely change.
 The system certificate test cannot be run because Mtest is often run on systems
