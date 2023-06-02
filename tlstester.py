@@ -172,13 +172,6 @@ class Certs:
         )
         self.insert_file(f"{name}.key", pem_key)
 
-        der_key = key.private_bytes(
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encoding=serialization.Encoding.DER,
-            encryption_algorithm=serialization.NoEncryption(),
-        )
-        self.insert_file(f"{name}.key.der", der_key)
-
         n = subject_name
         pem = b""
         while n:
@@ -221,7 +214,7 @@ class Server:
         self.spawn_mapi(
             "clientauth",
             listen_addr,
-            self.ssl_context("server1", client_cert="server2"),
+            self.ssl_context("server1", client_cert="ca2"),
         )
 
     def ssl_context(
