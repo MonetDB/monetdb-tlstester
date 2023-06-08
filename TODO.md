@@ -23,21 +23,22 @@ TO DO
 
 * [X] Implement port clientauth
 
-* [ ] Create prototype docker image
+* [X] Create prototype docker image
 
-* [ ] Implement GitHub Action in pymonetdb
+* [X] Implement GitHub Action in pymonetdb
 
-* [ ] Implement system certificate test in pymonetdb
+* [X] Implement system certificate test in pymonetdb
+
+* [X] Ask Panos to create tlstester container on Docker Hub, use it in pymonetdb
+
+* [X] Allow to sign for multiple domains
+
+* [X] Implement forwarding so simple tests don't need stunnel
+
+* [X] Allow to use as a library, useful for Mtest
 
 * [ ] Implement prototype integration of tlstester.py in Mtest
 
-* [ ] Ask Panos to create tlstester container on Docker Hub, use it in pymonetdb
-
 Maybe one day:
 
-* Implement forwarding to a real MonetDB instance.
-
-* Make the certificates live for 14 days. Once they're 7 days old, when a
-  new connection comes in and the previous connection was more than 15 minutes
-  ago, renew all certificates. This allows to leave tlstester running for long
-  periods of time.
+* For long running instances, renew certificates after a while
