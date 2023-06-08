@@ -6,14 +6,16 @@ import http.server
 import io
 import logging
 import os
+import socket
 import socketserver
 import ssl
-from ssl import SSLContext, SSLError, TLSVersion
+from ssl import SSLContext, SSLEOFError, SSLError, TLSVersion
 import struct
 import sys
 import tempfile
 from threading import Thread
-from typing import Any, Callable, List, Optional
+import threading
+from typing import Any, Callable, List, Optional, Tuple
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization, hashes
@@ -66,6 +68,13 @@ argparser.add_argument(
     metavar="NAME=PORTNUM",
     default=[],
     help="force port assignment",
+)
+argparser.add_argument(
+    "-f",
+    "--forward",
+    metavar="LOCALPORT:FORWARDHOST:FORWARDPORT",
+    type=str,
+    help="forward decrypted traffic somewhere else",
 )
 argparser.add_argument(
     "-v", "--verbose", action="store_true", help="Log more information"
@@ -208,14 +217,25 @@ class Certs:
 class TLSTester:
     certs: Certs
     listen_addr: str
+    forward_to: Optional[Tuple[str, int]] = None
     preassigned: dict[str, int]
     portmap: dict[str, int]
     next_port: int
     workers: List[Callable[[], None]]
 
-    def __init__(self, certs: Certs, listen_addr: str, preassigned, sequential):
+    def __init__(
+        self,
+        certs: Certs,
+        listen_addr: str,
+        preassigned,
+        sequential,
+        forward_host=None,
+        forward_port=None,
+    ):
         self.certs = certs
         self.listen_addr = listen_addr
+        if forward_host or forward_port:
+            self.forward_to = (forward_host, forward_port)
         self.preassigned = preassigned
         self.portmap = dict()
         if "base" in preassigned and sequential:
@@ -247,6 +267,8 @@ class TLSTester:
             only_preassigned,
             self.ssl_context("server1", client_cert="ca2"),
         )
+        if self.forward_to:
+            self.spawn_forward("forward", self.ssl_context("server3"))
 
     def ssl_context(
         self, cert_name: str, tls_version=TLSVersion.TLSv1_3, client_cert=None
@@ -304,6 +326,19 @@ class TLSTester:
         port = self.allocate_port(name)
         handler = lambda req, addr, server: MapiHandler(req, addr, server, name, ctx)
         server = MyTCPServer((self.listen_addr, port), handler)
+        port = server.server_address[1]
+        log.debug(f"Bound port {name} to {port}")
+        self.portmap[name] = port
+        self.workers.append(server.serve_forever)
+
+    def spawn_forward(self, name, ctx: SSLContext):
+        if name in self.portmap:
+            return
+        local_port = self.preassigned[name]
+        handler = lambda req, addr, server: ForwardHandler(
+            req, addr, server, name, ctx, self.forward_to
+        )
+        server = MyTCPServer((self.listen_addr, local_port), handler)
         port = server.server_address[1]
         log.debug(f"Bound port {name} to {port}")
         self.portmap[name] = port
@@ -449,9 +484,115 @@ class MapiHandler(socketserver.BaseRequestHandler):
         return buf
 
 
+class ForwardHandler(socketserver.BaseRequestHandler):
+    name: str
+    forward: Tuple[str, int]
+    context: SSLContext
+    conn: ssl.SSLSocket
+
+    def __init__(self, req, addr, server, name, context, forward):
+        self.name = name
+        self.forward = forward
+        self.context = context
+        self.stopping = False
+        super().__init__(req, addr, server)
+
+    def handle(self):
+        log.debug(f"port '{self.name}': new connection")
+        log.debug(f"ACTIVE {[t.name for t in threading.enumerate()]}")
+        assert self.context
+        if self.context:
+            log.debug(f"port '{self.name}': trying to set up TLS")
+            try:
+                self.conn = self.context.wrap_socket(self.request, server_side=True)
+                log.info(f"port '{self.name}': TLS handshake succeeded")
+            except SSLError as e:
+                log.info(f"port '{self.name}': TLS handshake failed: {e}")
+                return
+        else:
+            self.conn = self.request
+            log.info(f"port '{self.name}' no TLS handshake necessary")
+
+        try:
+            log.debug(f"attempting to connect to {self.forward}")
+            upstream = socket.create_connection(self.forward)
+            log.debug(f"connection established")
+        except OSError as e:
+            log.error("Could not open connection to {self.forward}: {e}")
+            return
+
+        Thread(
+            target=lambda: self.move("upstream", read_from=self.conn, write_to=upstream)
+        ).start()
+        self.move("downstream", read_from=upstream, write_to=self.conn)
+
+    def move(self, direction, read_from, write_to):
+        try:
+            while True:
+                data = None
+                try:
+                    data = read_from.recv(8192)
+                    if not data:
+                        break
+                    write_to.sendall(data)
+                except BrokenPipeError:
+                    break
+                except SSLEOFError:
+                    break
+                except OSError as e:
+                    log.error(f"encountered error {direction}: {e!r}")
+                    break
+            try:
+                write_to.shutdown(socket.SHUT_WR)
+            except OSError as e:
+                pass
+        finally:
+            log.debug(f"Done forwarding data {direction}")
+
+    def send_message(self, msg: bytes):
+        n = len(msg)
+        head = struct.pack("<h", 2 * n + 1)
+        self.conn.sendall(head + msg)
+
+    def recv_message(self):
+        nread = 0
+        while True:
+            head = self.recv_bytes(2)
+            nread += len(head)
+            if len(head) < 2:
+                break
+            n = struct.unpack("<h", head)[0]
+            size = n // 2
+            last = (n & 1) > 0
+            if size > 0:
+                body = self.recv_bytes(size)
+                nread += len(body)
+                if len(body) < size:
+                    break
+            if last:
+                return True
+
+        log.info("port '{self.name}': incomplete message, EOF after {nread} bytes")
+        return False
+
+    def recv_bytes(self, size):
+        """Read 'size' bytes. Only return fewer if EOF"""
+        buf = b""
+        while len(buf) < size:
+            remaining = size - len(buf)
+            more = self.conn.recv(remaining)
+            if more == b"":
+                return buf
+            else:
+                buf += more
+        return buf
+
+
 def main(args):
-    if args.base_port is None and not args.write:
-        sys.exit("Please specify at least one of -p --base-port or -w --write")
+    if args.base_port is None and not args.write and args.forward is None:
+        sys.exit(
+            "Please specify at least one of -p --base-port, -w --write or -f --forward"
+        )
     if args.base_port == 0 and args.sequential:
         sys.exit("--sequential requires a nonzero base port")
 
@@ -470,21 +611,40 @@ def main(args):
                 count += 1
         log.info(f"Wrote {count} files to {dir!r}")
 
-    if args.base_port is None:
-        return 0
+    preassigned = dict()
 
-    preassigned = dict(base=args.base_port)
     for a in args.assign:
         name, num = a.split("=", 1)
         if name == "base":
             sys.exit("use -p --base-port to set the base port")
         preassigned[name] = int(num)
 
+    if args.forward:
+        l, h, p = args.forward.split(":", 2)
+        preassigned["forward"] = int(l)
+        forward_remote_host = h
+        forward_remote_port = int(p)
+        if args.base_port is None:
+            # otherwise listeners won't start
+            args.base_port = 0
+        elif args.base_port == preassigned["forward"]:
+            sys.exit("base port and forward port cannot be the same")
+    else:
+        forward_remote_host = None
+        forward_remote_port = None
+
+    if args.base_port is None:
+        return 0
+    else:
+        preassigned["base"] = args.base_port
+
     server = TLSTester(
         certs=certs,
         preassigned=preassigned,
         listen_addr=args.listen_addr,
         sequential=args.sequential,
+        forward_host=forward_remote_host,
+        forward_port=forward_remote_port,
     )
 
     log.info(f"Serving requests on base port {server.base_port()}")
