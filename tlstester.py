@@ -50,9 +50,10 @@ argparser.add_argument(
 argparser.add_argument(
     "-n",
     "--hostname",
+    action="append",
     type=str,
-    default="localhost.localdomain",
-    help="server name to sign certificates for, default=localhost.localdomain",
+    default=[],
+    help="server name to sign certificates for, can be repeated, default=localhost.localdomain",
 )
 argparser.add_argument(
     "--sequential",
@@ -65,14 +66,14 @@ argparser.add_argument(
 
 
 class Certs:
-    hostname: str
+    hostnames: str
     _files: dict[str, str]
     _keys: dict[x509.Name, rsa.RSAPrivateKey]
     _certs: dict[x509.Name, x509.Certificate]
     _parents: dict[x509.Name, x509.Name]
 
-    def __init__(self, hostname):
-        self.hostname = hostname
+    def __init__(self, hostnames: List[str]):
+        self.hostnames = hostnames
         self._files = {}
         self._keys = {}
         self._certs = {}
@@ -110,14 +111,15 @@ class Certs:
         return ca_name
 
     def gen_server(self, name: str, ca_name: x509.Name, not_before=0, not_after=14, keycrt=False):
+        assert self.hostnames
         server_name = x509.Name(
             [
                 x509.NameAttribute(x509.NameOID.ORGANIZATION_NAME, f"Org {name}"),
-                x509.NameAttribute(x509.NameOID.COMMON_NAME, self.hostname),
+                x509.NameAttribute(x509.NameOID.COMMON_NAME, self.hostnames[0]),
             ]
         )
         noncritical_server_extensions = [
-            x509.SubjectAlternativeName([x509.DNSName(self.hostname)])
+            x509.SubjectAlternativeName([x509.DNSName(n) for n in self.hostnames])
         ]
         self.gen_key(
             name=name,
@@ -408,7 +410,7 @@ class MapiHandler(socketserver.BaseRequestHandler):
 
 def main(args):
     log.debug("Creating certs")
-    certs = Certs(args.hostname)
+    certs = Certs(args.hostname or ["localhost.localdomain"])
     if args.write:
         dir = args.write
         try:
