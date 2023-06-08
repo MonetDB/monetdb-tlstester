@@ -30,8 +30,7 @@ argparser.add_argument(
     "-p",
     "--base-port",
     type=int,
-    required=True,
-    help="base port on which utility is reachable",
+    help="base port on which this utility is reachable",
 )
 argparser.add_argument(
     "-w",
@@ -59,6 +58,14 @@ argparser.add_argument(
     "--sequential",
     action="store_true",
     help="allocate ports sequentially after BASE_PORT, instead of whatever the OS decides",
+)
+argparser.add_argument(
+    "-a",
+    "--assign",
+    action="append",
+    metavar="NAME=PORTNUM",
+    default=[],
+    help="force port assignment",
 )
 argparser.add_argument(
     "-v", "--verbose", action="store_true", help="Log more information"
@@ -110,7 +117,9 @@ class Certs:
 
         return ca_name
 
-    def gen_server(self, name: str, ca_name: x509.Name, not_before=0, not_after=14, keycrt=False):
+    def gen_server(
+        self, name: str, ca_name: x509.Name, not_before=0, not_after=14, keycrt=False
+    ):
         assert self.hostnames
         server_name = x509.Name(
             [
@@ -196,34 +205,46 @@ class Certs:
         self._files[name] = content
 
 
-class Server:
+class TLSTester:
     certs: Certs
+    listen_addr: str
+    preassigned: dict[str, int]
     portmap: dict[str, int]
     next_port: int
     workers: List[Callable[[], None]]
 
-    def __init__(self, certs: Certs, listen_addr: str, base_port: int, sequential):
+    def __init__(self, certs: Certs, listen_addr: str, preassigned, sequential):
         self.certs = certs
+        self.listen_addr = listen_addr
+        self.preassigned = preassigned
         self.portmap = dict()
-        self.next_port = base_port + 1 if sequential else 0
+        if "base" in preassigned and sequential:
+            self.next_port = preassigned["base"] + 1
+        else:
+            self.next_port = 0
         self.workers = []
 
-        self.spawn_http(listen_addr, base_port)
+        self.spawn_listeners(only_preassigned=True)
+        self.spawn_listeners(only_preassigned=False)
 
-        self.spawn_mapi("plain", listen_addr, None)
-        self.spawn_mapi("server1", listen_addr, self.ssl_context("server1"))
-        self.spawn_mapi("server2", listen_addr, self.ssl_context("server2"))
-        self.spawn_mapi("server3", listen_addr, self.ssl_context("server3"))
+    def base_port(self) -> int:
+        return self.portmap["base"]
 
-        self.spawn_mapi("expiredcert", listen_addr, self.ssl_context("server1x"))
+    def spawn_listeners(self, only_preassigned: bool):
+        self.spawn_http("base", only_preassigned)
+        self.spawn_mapi("plain", only_preassigned, None)
+        self.spawn_mapi("server1", only_preassigned, self.ssl_context("server1"))
+        self.spawn_mapi("server2", only_preassigned, self.ssl_context("server2"))
+        self.spawn_mapi("server3", only_preassigned, self.ssl_context("server3"))
+        self.spawn_mapi("expiredcert", only_preassigned, self.ssl_context("server1x"))
         self.spawn_mapi(
             "tls12",
-            listen_addr,
+            only_preassigned,
             self.ssl_context("server1", tls_version=TLSVersion.TLSv1_2),
         )
         self.spawn_mapi(
             "clientauth",
-            listen_addr,
+            only_preassigned,
             self.ssl_context("server1", client_cert="ca2"),
         )
 
@@ -260,24 +281,44 @@ class Server:
         for t in threads:
             t.join()
 
-    def spawn_http(self, listen_addr: str, port: int):
+    def spawn_http(self, name: str, only_preassigned: bool):
+        if only_preassigned and name not in self.preassigned:
+            return
+        if name in self.portmap:
+            return
+        port = self.preassigned.get(name, 0)
         handler = lambda req, addr, server: WebHandler(
             req, addr, server, self.certs, self.portmap
         )
-        server = http.server.HTTPServer((listen_addr, port), handler)
-        log.debug(f"Bound base port {args.base_port}")
-        self.workers.append(server.serve_forever)
-
-    def spawn_mapi(self, name: str, listen_addr: str, ctx: SSLContext):
-        port = self.next_port
-        if self.next_port > 0:
-            self.next_port += 1
-        handler = lambda req, addr, server: MapiHandler(req, addr, server, name, ctx)
-        server = MyTCPServer((listen_addr, port), handler)
+        server = http.server.HTTPServer((self.listen_addr, port), handler)
         port = server.server_address[1]
         log.debug(f"Bound port {name} to {port}")
         self.portmap[name] = port
         self.workers.append(server.serve_forever)
+
+    def spawn_mapi(self, name: str, only_preassigned, ctx: SSLContext):
+        if only_preassigned and name not in self.preassigned:
+            return
+        if name in self.portmap:
+            return
+        port = self.allocate_port(name)
+        handler = lambda req, addr, server: MapiHandler(req, addr, server, name, ctx)
+        server = MyTCPServer((self.listen_addr, port), handler)
+        port = server.server_address[1]
+        log.debug(f"Bound port {name} to {port}")
+        self.portmap[name] = port
+        self.workers.append(server.serve_forever)
+
+    def allocate_port(self, name):
+        if name in self.preassigned:
+            port = self.preassigned[name]
+        elif self.next_port > 0:
+            while self.next_port in self.portmap.values():
+                self.next_port += 1
+            port = self.next_port
+        else:
+            port = 0
+        return port
 
 
 class WebHandler(http.server.BaseHTTPRequestHandler):
@@ -409,6 +450,11 @@ class MapiHandler(socketserver.BaseRequestHandler):
 
 
 def main(args):
+    if args.base_port is None and not args.write:
+        sys.exit("Please specify at least one of -p --base-port or -w --write")
+    if args.base_port == 0 and args.sequential:
+        sys.exit("--sequential requires a nonzero base port")
+
     log.debug("Creating certs")
     certs = Certs(args.hostname or ["localhost.localdomain"])
     if args.write:
@@ -419,19 +465,29 @@ def main(args):
             pass
         count = 0
         for name, content in certs.all().items():
-            with open(os.path.join(dir, name), "wb") as f:
-                f.write(content)
+            with open(os.path.join(dir, name), "wb") as a:
+                a.write(content)
                 count += 1
         log.info(f"Wrote {count} files to {dir!r}")
 
-    server = Server(
+    if args.base_port is None:
+        return 0
+
+    preassigned = dict(base=args.base_port)
+    for a in args.assign:
+        name, num = a.split("=", 1)
+        if name == "base":
+            sys.exit("use -p --base-port to set the base port")
+        preassigned[name] = int(num)
+
+    server = TLSTester(
         certs=certs,
-        base_port=args.base_port,
+        preassigned=preassigned,
         listen_addr=args.listen_addr,
         sequential=args.sequential,
     )
 
-    log.info("Serving requests")
+    log.info(f"Serving requests on base port {server.base_port()}")
     server.serve_forever()
 
 
@@ -439,5 +495,4 @@ if __name__ == "__main__":
     args = argparser.parse_args()
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(level=level)
-    log.debug(args)
     sys.exit(main(args) or 0)
