@@ -92,6 +92,19 @@ protocol introduced in 2023.
    user id.
 </dd>
 
+<dt>sni</dt>
+<dd>
+   A port using server1.crt, but requiring the client to send a Server Name Indication.
+   Also requires that the name is one of the host names listed on the certificates.
+</dd>
+
+<dt>alpn_mapi9</dt>
+<dd>
+   A port using server1.crt, but requiring the client to negotiate ALPN protocol
+   "mapi/9". If this fails the TLS negotiation will still succeed but the connection
+   will be closed before the MAPI handshake.
+</dd>
+
 </dl>
 
 
@@ -162,6 +175,19 @@ distinctive phrase `Sorry, this is not a real MonetDB server`.
 <dt>fail_tls_to_plain</dt>
 <dd>
    Make a plain MAPI connection to port 'server1'. This should fail.
+</dd>
+
+<dt>connect_server_name</dt>
+<dd>
+   Connect to port 'sni' over TLS. Have a succesful MAPI exchange.
+   This indicates that the implementation sent a correct Server Name Indication.
+</dd>
+
+<dt>connect_alpn_mapi9</dt>
+<dd>
+   Connect to port 'alpn_mapi9' over TLS. Have a succesful MAPI exchange.
+   This indicates that the implementation succesfully negotiated ALPN protocol
+   "mapi/9".
 </dd>
 
 <dt>connect_trusted</dt>

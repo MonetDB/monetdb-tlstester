@@ -9,7 +9,7 @@ import os
 import socket
 import socketserver
 import ssl
-from ssl import SSLContext, SSLEOFError, SSLError, TLSVersion
+from ssl import AlertDescription, SSLContext, SSLEOFError, SSLError, TLSVersion
 import struct
 import sys
 import tempfile
@@ -216,6 +216,7 @@ class Certs:
 
 class TLSTester:
     certs: Certs
+    hostnames: List[str]
     listen_addr: str
     forward_to: Optional[Tuple[str, int]] = None
     preassigned: dict[str, int]
@@ -231,8 +232,10 @@ class TLSTester:
         sequential,
         forward_host=None,
         forward_port=None,
+        hostnames=None,
     ):
         self.certs = certs
+        self.hostnames = hostnames or []
         self.listen_addr = listen_addr
         if forward_host or forward_port:
             self.forward_to = (forward_host, forward_port)
@@ -267,17 +270,41 @@ class TLSTester:
             only_preassigned,
             self.ssl_context("server1", client_cert="ca2"),
         )
+        if self.hostnames:
+            self.spawn_mapi(
+                "sni", only_preassigned, self.ssl_context("server1", hostnames=self.hostnames)
+            )
+        self.spawn_mapi(
+            "alpn_mapi9",
+            only_preassigned,
+            self.ssl_context("server1"),
+            check_alpn=["mapi/9"]
+        )
         if self.forward_to:
             self.spawn_forward("forward", self.ssl_context("server3"))
 
     def ssl_context(
-        self, cert_name: str, tls_version=TLSVersion.TLSv1_3, client_cert=None
+        self, cert_name: str, tls_version=TLSVersion.TLSv1_3, client_cert=None, hostnames=[]
     ):
         context = SSLContext(ssl.PROTOCOL_TLS_SERVER)
 
         context.minimum_version = tls_version or TLSVersion.TLSv1_3
+        context.set_alpn_protocols(["mapi/9"])
         if tls_version:
             context.maximum_version = tls_version
+
+        def sni_callback(sock, server_name, ctx):
+            if hostnames:
+                if server_name is None:
+                    log.info(f"        client sent no server name")
+                    return AlertDescription.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+                elif server_name not in hostnames:
+                    log.info(f"        client sent invalid server name '{server_name}'")
+                    return AlertDescription.ALERT_DESCRIPTION_UNRECOGNIZED_NAME
+                else:
+                    log.debug(f"        client sent server name '{server_name}'")
+            return None
+        context.sni_callback = sni_callback
 
         # Turns out the ssl API forces us to write the certs to file. Yuk!
         with tempfile.NamedTemporaryFile(mode="wb") as f:
@@ -318,13 +345,13 @@ class TLSTester:
         self.portmap[name] = port
         self.workers.append(server.serve_forever)
 
-    def spawn_mapi(self, name: str, only_preassigned, ctx: SSLContext):
+    def spawn_mapi(self, name: str, only_preassigned, ctx: SSLContext, check_alpn=None):
         if only_preassigned and name not in self.preassigned:
             return
         if name in self.portmap:
             return
         port = self.allocate_port(name)
-        handler = lambda req, addr, server: MapiHandler(req, addr, server, name, ctx)
+        handler = lambda req, addr, server: MapiHandler(req, addr, server, name, ctx, check_alpn)
         server = MyTCPServer((self.listen_addr, port), handler)
         port = server.server_address[1]
         log.debug(f"Bound port {name} to {port}")
@@ -410,13 +437,15 @@ class MapiHandler(socketserver.BaseRequestHandler):
     name: str
     context: SSLContext
     conn: ssl.SSLSocket
+    check_alpn: Optional[List[str]]
 
     CHALLENGE = b"s7NzFDHo0UdlE:merovingian:9:RIPEMD160,SHA512,SHA384,SHA256,SHA224,SHA1:LIT:SHA512:"
     ERRORMESSAGE = b"!Sorry, this is not a real MonetDB instance"
 
-    def __init__(self, req, addr, server, name, context):
+    def __init__(self, req, addr, server, name, context, check_alpn):
         self.name = name
         self.context = context
+        self.check_alpn = check_alpn
         super().__init__(req, addr, server)
 
     def handle(self):
@@ -429,6 +458,16 @@ class MapiHandler(socketserver.BaseRequestHandler):
             except SSLError as e:
                 log.info(f"port '{self.name}': TLS handshake failed: {e}")
                 return
+            if self.check_alpn:
+                alpn = self.conn.selected_alpn_protocol()
+                if alpn is None:
+                    log.info(f"port '{self.name}': Abort connection because ALPN negotiation failed")
+                    return
+                elif alpn not in self.check_alpn:
+                    log.info(f"port '{self.name}': Abort connection because selected ALPN protocol '{alpn}' is not in {self.check_alpn}")
+                    return
+                else:
+                    log.debug(f"port '{self.name}': selected suitable ALPN protocol '{alpn}'")
         else:
             self.conn = self.request
             log.info(f"port '{self.name}' no TLS handshake necessary")
@@ -597,7 +636,8 @@ def main(args):
         sys.exit("--sequential requires a nonzero base port")
 
     log.debug("Creating certs")
-    certs = Certs(args.hostname or ["localhost.localdomain"])
+    hostnames = args.hostname or ["localhost.localdomain"]
+    certs = Certs(hostnames)
     if args.write:
         dir = args.write
         try:
@@ -639,6 +679,7 @@ def main(args):
         preassigned["base"] = args.base_port
 
     server = TLSTester(
+        hostnames=hostnames,
         certs=certs,
         preassigned=preassigned,
         listen_addr=args.listen_addr,
