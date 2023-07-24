@@ -204,6 +204,9 @@ class Certs:
             n = self._parents.get(n)
         self.insert_file(f"{name}.crt", pem_crt)
 
+        der_crt = self._certs[subject_name].public_bytes(serialization.Encoding.DER)
+        self.insert_file(f"{name}.der", der_crt)
+
         if keycrt:
             pem_keycrt = pem_key + pem_crt
             self.insert_file(f"{name}.keycrt", pem_keycrt)
@@ -635,8 +638,8 @@ def main(args):
     if args.base_port == 0 and args.sequential:
         sys.exit("--sequential requires a nonzero base port")
 
-    log.debug("Creating certs")
     hostnames = args.hostname or ["localhost.localdomain"]
+    log.debug(f"Creating certs for {hostnames}")
     certs = Certs(hostnames)
     if args.write:
         dir = args.write
