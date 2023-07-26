@@ -2,6 +2,7 @@
 
 from argparse import ArgumentParser
 from datetime import datetime, timedelta
+import hashlib
 import http.server
 import io
 import logging
@@ -15,7 +16,7 @@ import sys
 import tempfile
 from threading import Thread
 import threading
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple, Union
 
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization, hashes
@@ -83,7 +84,7 @@ argparser.add_argument(
 
 class Certs:
     hostnames: str
-    _files: dict[str, str]
+    _files: dict[str, bytes]
     _keys: dict[x509.Name, rsa.RSAPrivateKey]
     _certs: dict[x509.Name, x509.Certificate]
     _parents: dict[x509.Name, x509.Name]
@@ -283,6 +284,7 @@ class TLSTester:
             self.ssl_context("server1"),
             check_alpn=["mapi/9"]
         )
+        self.spawn_mapi("redirect", only_preassigned, self.ssl_context("server1"), redirect_to="server2")
         if self.forward_to:
             self.spawn_forward("forward", self.ssl_context("server3"))
 
@@ -348,13 +350,13 @@ class TLSTester:
         self.portmap[name] = port
         self.workers.append(server.serve_forever)
 
-    def spawn_mapi(self, name: str, only_preassigned, ctx: SSLContext, check_alpn=None):
+    def spawn_mapi(self, name: str, only_preassigned, ctx: SSLContext, check_alpn=None, redirect_to=None):
         if only_preassigned and name not in self.preassigned:
             return
         if name in self.portmap:
             return
         port = self.allocate_port(name)
-        handler = lambda req, addr, server: MapiHandler(req, addr, server, name, ctx, check_alpn)
+        handler = lambda req, addr, server: MapiHandler(req, addr, server, self, name, ctx, check_alpn, redirect_to)
         server = MyTCPServer((self.listen_addr, port), handler)
         port = server.server_address[1]
         log.debug(f"Bound port {name} to {port}")
@@ -437,18 +439,22 @@ class MyTCPServer(socketserver.ForkingTCPServer):
 
 
 class MapiHandler(socketserver.BaseRequestHandler):
+    tlstester: TLSTester
     name: str
     context: SSLContext
     conn: ssl.SSLSocket
     check_alpn: Optional[List[str]]
+    redirect: Optional[str]
 
     CHALLENGE = b"s7NzFDHo0UdlE:merovingian:9:RIPEMD160,SHA512,SHA384,SHA256,SHA224,SHA1:LIT:SHA512:"
-    ERRORMESSAGE = b"!Sorry, this is not a real MonetDB instance"
+    ERRORMESSAGE = "!Sorry, this is not a real MonetDB instance"
 
-    def __init__(self, req, addr, server, name, context, check_alpn):
+    def __init__(self, req, addr, server, tlstester, name, context, check_alpn, redirect_to):
+        self.tlstester = tlstester
         self.name = name
         self.context = context
         self.check_alpn = check_alpn
+        self.redirect = redirect_to
         super().__init__(req, addr, server)
 
     def handle(self):
@@ -479,10 +485,24 @@ class MapiHandler(socketserver.BaseRequestHandler):
             self.send_message(self.CHALLENGE)
             log.debug(f"port '{self.name}': sent challenge, awaiting response")
             if self.recv_message():
-                self.send_message(self.ERRORMESSAGE)
-                log.debug(
-                    f"port '{self.name}': received response, sent closing message"
-                )
+                if self.redirect:
+                    host = self.tlstester.hostnames[0]
+                    port = self.tlstester.portmap[self.redirect]
+                    cert = self.tlstester.certs.get_file(f"{self.redirect}.der")
+                    algo = 'sha1' # keep finger print length conveniently small
+                    digest = hashlib.new(algo, cert).hexdigest()
+                    fingerprint = "{" + algo + "}" + digest
+                    msg = f"^monetdbs://{host}:{port}?fingerprint={fingerprint}\n"
+                    self.send_message(bytes(msg, 'ascii'))
+                    log.debug(
+                        f"port '{self.name}': sent redirect, sent closing message"
+                    )
+                else:
+                    message = f"{self.ERRORMESSAGE} ({self.name})"
+                    self.send_message(bytes(message, "utf-8"))
+                    log.debug(
+                        f"port '{self.name}': received response, sent closing message"
+                    )
 
         except OSError as e:
             log.info(f"port '{self.name}': error {e}")
