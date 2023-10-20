@@ -22,7 +22,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-VERSION = "0.3.0"
+VERSION = "0.3.1"
 
 DESCRIPTION = f"tlstester.py version {VERSION}: a utility to help test TLS MAPI client implementations."
 
