@@ -259,10 +259,10 @@ class TLSTester:
 
     def spawn_listeners(self, only_preassigned: bool):
         self.spawn_http("base", only_preassigned)
-        self.spawn_mapi("plain", only_preassigned, None)
         self.spawn_mapi("server1", only_preassigned, self.ssl_context("server1"))
         self.spawn_mapi("server2", only_preassigned, self.ssl_context("server2"))
         self.spawn_mapi("server3", only_preassigned, self.ssl_context("server3"))
+        self.spawn_mapi("plain", only_preassigned, None)
         self.spawn_mapi("expiredcert", only_preassigned, self.ssl_context("server1x"))
         self.spawn_mapi(
             "tls12",
@@ -489,10 +489,10 @@ class MapiHandler(socketserver.BaseRequestHandler):
                     host = self.tlstester.hostnames[0]
                     port = self.tlstester.portmap[self.redirect]
                     cert = self.tlstester.certs.get_file(f"{self.redirect}.der")
-                    algo = 'sha1' # keep finger print length conveniently small
+                    algo = 'sha256'
                     digest = hashlib.new(algo, cert).hexdigest()
                     fingerprint = "{" + algo + "}" + digest
-                    msg = f"^monetdbs://{host}:{port}?fingerprint={fingerprint}\n"
+                    msg = f"^monetdbs://{host}:{port}?certhash={fingerprint}\n"
                     self.send_message(bytes(msg, 'ascii'))
                     log.debug(
                         f"port '{self.name}': sent redirect, sent closing message"
