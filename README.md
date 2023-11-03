@@ -167,12 +167,12 @@ distinctive phrase `Sorry, this is not a real MonetDB server`.
    Have a succesful MAPI exchange.
 </dd>
 
-<dt>fail_plain_to_tls</dt>
+<dt>fail_tls_to_plain</dt>
 <dd>
    Connect to port 'plain' over TLS. This should fail, not hang.
 </dd>
 
-<dt>fail_tls_to_plain</dt>
+<dt>fail_plain_to_tls</dt>
 <dd>
    Make a plain MAPI connection to port 'server1'. This should fail.
 </dd>
