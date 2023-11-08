@@ -147,6 +147,13 @@ distinctive phrase `Sorry, this is not a real MonetDB server`.
    The client should refuse to let the connection proceed.
 </dd>
 
+<dt>refuse_wrong_host</dt>
+<dd>
+   Connect to port 'server1' over TLS, but using an alternative host name.
+   For example, `localhost.localdomain` instead of `localhost`.
+   The client should refuse to let the connection proceed.
+</dd>
+
 <dt>refuse_tlsv12</dt>
 <dd>
    Connect to port 'tls12' over TLS, verifying the connection using ca1.crt.
@@ -192,12 +199,24 @@ distinctive phrase `Sorry, this is not a real MonetDB server`.
 
 <dt>connect_trusted</dt>
 <dd>
-   Only when running in a throwaway environment such as a Docker container:
-   Install ca3.crt in the system root certificate store. This is highly
-   system-specific. Connect to port 'server3' over TLS without passing a
-   certificate to check. The implementation should pick it up from the system
-   store. Have a succesful MAPI exchange.
+   Make a MAPI connection to a server whose certificate is signed by
+   a CA listed inthe system root trust store. One way of arranging this is
+   by running tlstester on a public host and using for example LetsEncrypt
+   to obtain a certificate.
+
+   Alternatively, when running in a throwaway environment such as a Docker
+   container, connect to port 'server3' after installing 'ca3.crt' in the
+   system trust root store.
+
+   Either way, have a succesful MAPI exchange.
 </dd>
+
+<dt>refuse_trusted_wrong_host</dt>
+<dd>
+   Same as <code>connect_trusted</code> above, but the certificate presented
+   by the server should not match the host name. This should fail.
+</dd>
+
 
 </dl>
 
