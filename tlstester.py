@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
 
+# SPDX-License-Identifier: MPL-2.0
+#
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0.  If a copy of the MPL was not distributed with this
+# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+#
+# Copyright 1997 - July 2008 CWI, August 2008 - 2023 MonetDB B.V.
+
 from argparse import ArgumentParser
 from datetime import datetime, timedelta
 import hashlib
@@ -10,17 +18,23 @@ import os
 import socket
 import socketserver
 import ssl
-from ssl import AlertDescription, SSLContext, SSLEOFError, SSLError, TLSVersion
+from ssl import AlertDescription, SSLContext, SSLEOFError, SSLError
 import struct
 import sys
 import tempfile
 from threading import Thread
 import threading
-from typing import Any, Callable, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-from cryptography import x509
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.asymmetric import rsa
+# Our TLS implementation never uses anything less than TLSv1.3.
+assert ssl.HAS_TLSv1_3
+
+import warnings
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore', category=UserWarning)
+    from cryptography import x509
+    from cryptography.hazmat.primitives import serialization, hashes
+    from cryptography.hazmat.primitives.asymmetric import rsa
 
 VERSION = "0.3.1"
 
@@ -84,10 +98,10 @@ argparser.add_argument(
 
 class Certs:
     hostnames: str
-    _files: dict[str, bytes]
-    _keys: dict[x509.Name, rsa.RSAPrivateKey]
-    _certs: dict[x509.Name, x509.Certificate]
-    _parents: dict[x509.Name, x509.Name]
+    _files: Dict[str, bytes]
+    _keys: Dict[x509.Name, rsa.RSAPrivateKey]
+    _certs: Dict[x509.Name, x509.Certificate]
+    _parents: Dict[x509.Name, x509.Name]
 
     def __init__(self, hostnames: List[str]):
         self.hostnames = hostnames
@@ -100,7 +114,7 @@ class Certs:
     def get_file(self, name):
         return self._files.get(name)
 
-    def all(self) -> dict[str, str]:
+    def all(self) -> Dict[str, str]:
         return self._files.copy()
 
     def gen_keys(self):
@@ -223,8 +237,8 @@ class TLSTester:
     hostnames: List[str]
     listen_addr: str
     forward_to: Optional[Tuple[str, int]] = None
-    preassigned: dict[str, int]
-    portmap: dict[str, int]
+    preassigned: Dict[str, int]
+    portmap: Dict[str, int]
     next_port: int
     workers: List[Callable[[], None]]
 
@@ -255,7 +269,10 @@ class TLSTester:
         self.spawn_listeners(only_preassigned=False)
 
     def base_port(self) -> int:
-        return self.portmap["base"]
+        return self.get_port("base")
+
+    def get_port(self, name) -> int:
+        return self.portmap[name]
 
     def spawn_listeners(self, only_preassigned: bool):
         self.spawn_http("base", only_preassigned)
@@ -267,7 +284,7 @@ class TLSTester:
         self.spawn_mapi(
             "tls12",
             only_preassigned,
-            self.ssl_context("server1", tls_version=TLSVersion.TLSv1_2),
+            self.ssl_context("server1", allow_tlsv12=True),
         )
         self.spawn_mapi(
             "clientauth",
@@ -289,14 +306,10 @@ class TLSTester:
             self.spawn_forward("forward", self.ssl_context("server3"))
 
     def ssl_context(
-        self, cert_name: str, tls_version=TLSVersion.TLSv1_3, client_cert=None, hostnames=[]
+        self, cert_name: str, allow_tlsv12=False, client_cert=None, hostnames=[]
     ):
-        context = SSLContext(ssl.PROTOCOL_TLS_SERVER)
-
-        context.minimum_version = tls_version or TLSVersion.TLSv1_3
+        context = make_context(allow_tlsv12)
         context.set_alpn_protocols(["mapi/9"])
-        if tls_version:
-            context.maximum_version = tls_version
 
         def sni_callback(sock, server_name, ctx):
             if hostnames:
@@ -309,14 +322,31 @@ class TLSTester:
                 else:
                     log.debug(f"        client sent server name '{server_name}'")
             return None
-        context.sni_callback = sni_callback
+        try:
+            context.sni_callback = sni_callback
+        except AttributeError:
+            context.set_servername_callback(sni_callback)
 
         # Turns out the ssl API forces us to write the certs to file. Yuk!
-        with tempfile.NamedTemporaryFile(mode="wb") as f:
-            f.write(self.certs.get_file(cert_name + ".key"))
-            f.write(self.certs.get_file(cert_name + ".crt"))
-            f.flush()
-            context.load_cert_chain(f.name)
+        # Complicated code because the delete= and delete_on_close= flags
+        # would be useful but are not available on old Pythons, and
+        # Windows does not allow load_cert_chain to open the file while
+        # the NamedTemporaryFile is not closed.
+        to_delete = None
+        try:
+            temp_file = tempfile.NamedTemporaryFile(mode="wb", delete=False)
+            to_delete = temp_file.name
+            temp_file.write(self.certs.get_file(cert_name + ".key"))
+            temp_file.write(self.certs.get_file(cert_name + ".crt"))
+            temp_file.flush()
+            temp_file.close()   # Cannot open twice on Windows
+            context.load_cert_chain(temp_file.name)
+        finally:
+            try:
+                if to_delete:
+                    os.unlink(to_delete)
+            except OSError:
+                pass
 
         if client_cert:
             context.verify_mode = ssl.CERT_REQUIRED
@@ -388,11 +418,40 @@ class TLSTester:
         return port
 
 
+def make_context(allowtlsv12 = False):
+    # Older versions of the ssl module don't have ssl.TLSVersion, so
+    # we have four combinations.
+
+    protocol = ssl.PROTOCOL_TLS_SERVER
+    opts = ssl.OP_NO_SSLv2
+    opts |= ssl.OP_NO_SSLv3
+    opts |= ssl.OP_NO_TLSv1
+    if allowtlsv12:
+        opts |= ssl.OP_NO_TLSv1_3
+    else:
+        opts |= ssl.OP_NO_TLSv1_2
+
+    context = SSLContext(protocol)
+    context.options = opts
+
+    if hasattr(context, 'minimum_version'):
+        context.maximum_version = ssl.TLSVersion.TLSv1_3
+        try:
+            if allowtlsv12:
+                context.minimum_version = ssl.TLSVersion.TLSv1_2
+            else:
+                context.minimum_version = ssl.TLSVersion.TLSv1_3
+        except ValueError as e:
+            log.error(f"Setting context.minimum_version caused ValueError. Python version {sys.version!r}, linked to OpenSSL {ssl.OPENSSL_VERSION} ({ssl.OPENSSL_VERSION_NUMBER:#x})")
+            raise e
+
+    return context
+
 class WebHandler(http.server.BaseHTTPRequestHandler):
     certs: Certs
-    portmap: dict[str, int]
+    portmap: Dict[str, int]
 
-    def __init__(self, req, addr, server, certs: Certs, portmap: dict[str, int]):
+    def __init__(self, req, addr, server, certs: Certs, portmap: Dict[str, int]):
         self.certs = certs
         self.portmap = portmap
         super().__init__(req, addr, server)
@@ -433,7 +492,7 @@ class WebHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(content)
 
 
-class MyTCPServer(socketserver.ForkingTCPServer):
+class MyTCPServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     pass
 
@@ -463,9 +522,12 @@ class MapiHandler(socketserver.BaseRequestHandler):
             log.debug(f"port '{self.name}': trying to set up TLS")
             try:
                 self.conn = self.context.wrap_socket(self.request, server_side=True)
-                log.info(f"port '{self.name}': TLS handshake succeeded")
+                log.info(f"port '{self.name}': TLS handshake succeeded: {self.conn.version()}")
             except SSLError as e:
                 log.info(f"port '{self.name}': TLS handshake failed: {e}")
+                return
+            except OSError as e:
+                log.info(f"port '{self.name}': error during TLS handshake: {e}")
                 return
             if self.check_alpn:
                 alpn = self.conn.selected_alpn_protocol()
@@ -634,7 +696,7 @@ class ForwardHandler(socketserver.BaseRequestHandler):
             if last:
                 return True
 
-        log.info("port '{self.name}': incomplete message, EOF after {nread} bytes")
+        log.info(f"port '{self.name}': incomplete message, EOF after {nread} bytes")
         return False
 
     def recv_bytes(self, size):
