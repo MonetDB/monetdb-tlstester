@@ -200,7 +200,7 @@ distinctive phrase `Sorry, this is not a real MonetDB server`.
 <dt>connect_trusted</dt>
 <dd>
    Make a MAPI connection to a server whose certificate is signed by
-   a CA listed inthe system root trust store. One way of arranging this is
+   a CA listed in the system root trust store. One way of arranging this is
    by running tlstester on a public host and using for example LetsEncrypt
    to obtain a certificate.
 

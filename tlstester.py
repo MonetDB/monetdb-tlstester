@@ -506,7 +506,7 @@ class MapiHandler(socketserver.BaseRequestHandler):
     redirect: Optional[str]
 
     CHALLENGE = b"s7NzFDHo0UdlE:merovingian:9:RIPEMD160,SHA512,SHA384,SHA256,SHA224,SHA1:LIT:SHA512:"
-    ERRORMESSAGE = "!Sorry, this is not a real MonetDB instance"
+    ERRORMESSAGE = "Sorry, this is not a real MonetDB instance"
 
     def __init__(self, req, addr, server, tlstester, name, context, check_alpn, redirect_to):
         self.tlstester = tlstester
@@ -518,6 +518,7 @@ class MapiHandler(socketserver.BaseRequestHandler):
 
     def handle(self):
         log.debug(f"port '{self.name}': new connection")
+        message = f"{self.ERRORMESSAGE} ({self.name})"
         if self.context:
             log.debug(f"port '{self.name}': trying to set up TLS")
             try:
@@ -532,13 +533,13 @@ class MapiHandler(socketserver.BaseRequestHandler):
             if self.check_alpn:
                 alpn = self.conn.selected_alpn_protocol()
                 if alpn is None:
-                    log.info(f"port '{self.name}': Abort connection because ALPN negotiation failed")
-                    return
+                    message = f"Rejecting connection because ALPN negotiation failed"
+                    log.info(f"port '{self.name}': {message}")
                 elif alpn not in self.check_alpn:
-                    log.info(f"port '{self.name}': Abort connection because selected ALPN protocol '{alpn}' is not in {self.check_alpn}")
-                    return
+                    message = f"Rejecting connection because selected ALPN protocol '{alpn}' is not in {self.check_alpn}"
+                    log.info(f"port '{self.name}': {message}")
                 else:
-                    log.debug(f"port '{self.name}': selected suitable ALPN protocol '{alpn}'")
+                    log.debug(f"port '{self.name}': selected correct ALPN protocol '{alpn}'")
         else:
             self.conn = self.request
             log.info(f"port '{self.name}' no TLS handshake necessary")
@@ -560,8 +561,7 @@ class MapiHandler(socketserver.BaseRequestHandler):
                         f"port '{self.name}': sent redirect, sent closing message"
                     )
                 else:
-                    message = f"{self.ERRORMESSAGE} ({self.name})"
-                    self.send_message(bytes(message, "utf-8"))
+                    self.send_message(bytes("!" + message, "utf-8"))
                     log.debug(
                         f"port '{self.name}': received response, sent closing message"
                     )
