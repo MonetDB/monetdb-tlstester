@@ -28,15 +28,15 @@ from threading import Thread
 import threading
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-# Our TLS implementation never uses anything less than TLSv1.3.
-assert ssl.HAS_TLSv1_3
-
 import warnings
 with warnings.catch_warnings():
     warnings.filterwarnings('ignore', category=UserWarning)
     from cryptography import x509
     from cryptography.hazmat.primitives import serialization, hashes
     from cryptography.hazmat.primitives.asymmetric import rsa
+
+# Our TLS implementation never uses anything less than TLSv1.3.
+assert ssl.HAS_TLSv1_3
 
 VERSION = "0.3.1"
 
@@ -375,9 +375,10 @@ class TLSTester:
         if name in self.portmap:
             return
         port = self.preassigned.get(name, 0)
-        handler = lambda req, addr, server: WebHandler(
-            req, addr, server, self.certs, self.portmap
-        )
+
+        def handler(req, addr, server):
+            return WebHandler(req, addr, server, self.certs, self.portmap)
+
         server = http.server.HTTPServer((self.listen_addr, port), handler)
         port = server.server_address[1]
         log.debug(f"Bound port {name} to {port}")
@@ -390,7 +391,10 @@ class TLSTester:
         if name in self.portmap:
             return
         port = self.allocate_port(name)
-        handler = lambda req, addr, server: MapiHandler(req, addr, server, self, name, ctx, check_alpn, redirect_to)
+
+        def handler(req, addr, server):
+            return MapiHandler(req, addr, server, self, name, ctx, check_alpn, redirect_to)
+
         server = MyTCPServer((self.listen_addr, port), handler)
         port = server.server_address[1]
         log.debug(f"Bound port {name} to {port}")
@@ -401,9 +405,10 @@ class TLSTester:
         if name in self.portmap:
             return
         local_port = self.preassigned[name]
-        handler = lambda req, addr, server: ForwardHandler(
-            req, addr, server, name, ctx, self.forward_to
-        )
+
+        def handler(req, addr, server):
+            return ForwardHandler(req, addr, server, name, ctx, self.forward_to)
+
         server = MyTCPServer((self.listen_addr, local_port), handler)
         port = server.server_address[1]
         log.debug(f"Bound port {name} to {port}")
@@ -422,7 +427,7 @@ class TLSTester:
         return port
 
 
-def make_context(allowtlsv12 = False):
+def make_context(allowtlsv12=False):
     # Older versions of the ssl module don't have ssl.TLSVersion, so
     # we have four combinations.
 
@@ -446,10 +451,16 @@ def make_context(allowtlsv12 = False):
             else:
                 context.minimum_version = ssl.TLSVersion.TLSv1_3
         except ValueError as e:
-            log.error(f"Setting context.minimum_version caused ValueError. Python version {sys.version!r}, linked to OpenSSL {ssl.OPENSSL_VERSION} ({ssl.OPENSSL_VERSION_NUMBER:#x})")
+            msg = (
+                "Setting context.minimum_version caused ValueError. "
+                f"Python version {sys.version!r}, "
+                f"linked to OpenSSL {ssl.OPENSSL_VERSION} ({ssl.OPENSSL_VERSION_NUMBER:#x})"
+            )
+            log.error(msg)
             raise e
 
     return context
+
 
 class WebHandler(http.server.BaseHTTPRequestHandler):
     certs: Certs
