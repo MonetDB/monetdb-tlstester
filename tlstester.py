@@ -26,7 +26,7 @@ import sys
 import tempfile
 from threading import Thread
 import threading
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 import warnings
 with warnings.catch_warnings():
@@ -99,7 +99,7 @@ argparser.add_argument(
 
 
 class Certs:
-    hostnames: str
+    hostnames: List[str]
     _files: Dict[str, bytes]
     _keys: Dict[x509.Name, rsa.RSAPrivateKey]
     _certs: Dict[x509.Name, x509.Certificate]
@@ -116,7 +116,7 @@ class Certs:
     def get_file(self, name):
         return self._files.get(name)
 
-    def all(self) -> Dict[str, str]:
+    def all(self) -> Dict[str, bytes]:
         return self._files.copy()
 
     def gen_keys(self):
@@ -173,8 +173,8 @@ class Certs:
         parent_name: Optional[x509.Name] = None,
         not_before=0,
         not_after=14,
-        critical_extensions: List[x509.ExtensionType] = [],
-        noncritical_extensions: List[x509.ExtensionType] = [],
+        critical_extensions: Sequence[x509.ExtensionType] = [],
+        noncritical_extensions: Sequence[x509.ExtensionType] = [],
         keycrt=False,
     ):
         with warnings.catch_warnings():
@@ -206,7 +206,8 @@ class Certs:
 
         self._keys[subject_name] = key
         self._certs[subject_name] = cert
-        self._parents[subject_name] = parent_name
+        if parent_name is not None:
+            self._parents[subject_name] = parent_name
 
         pem_key = key.private_bytes(
             format=serialization.PrivateFormat.TraditionalOpenSSL,
@@ -215,7 +216,7 @@ class Certs:
         )
         self.insert_file(f"{name}.key", pem_key)
 
-        n = subject_name
+        n: Optional[x509.Name] = subject_name
         pem_crt = b""
         while n:
             c = self._certs[n]
@@ -385,7 +386,7 @@ class TLSTester:
         self.portmap[name] = port
         self.workers.append(server.serve_forever)
 
-    def spawn_mapi(self, name: str, only_preassigned, ctx: SSLContext, check_alpn=None, redirect_to=None):
+    def spawn_mapi(self, name: str, only_preassigned, ctx: Optional[SSLContext], check_alpn=None, redirect_to=None):
         if only_preassigned and name not in self.preassigned:
             return
         if name in self.portmap:
